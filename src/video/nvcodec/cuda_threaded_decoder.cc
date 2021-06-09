@@ -17,32 +17,42 @@ namespace decord {
 namespace cuda {
 using namespace runtime;
 
-CUThreadedDecoder::CUThreadedDecoder(int device_id, AVCodecParameters *codecpar, AVInputFormat *iformat)
-    : device_id_(device_id), stream_({device_id, false}), device_{}, ctx_{}, parser_{}, decoder_{},
-    pkt_queue_{}, frame_queue_{},
-    run_(false), frame_count_(0), draining_(false),
-    tex_registry_(), nv_time_base_({1, 10000000}), frame_base_({1, 1000000}),
-    dec_ctx_(nullptr), bsf_ctx_(nullptr), width_(-1), height_(-1),
-    error_status_(false), error_message_() {
+CUContext CUMappedDevice::ctx_{};
+std::unordered_map<int, std::shared_ptr<CUMappedDevice>> CUThreadedDecoder::devices = {};
 
-    // initialize bitstream filters
-    InitBitStreamFilter(codecpar, iformat);
+CUMappedDevice::CUMappedDevice(int device_id) 
+    : device_id_(device_id), stream_({device_id, false}) {
 
-    CHECK_CUDA_CALL(cuInit(0));
-    CHECK_CUDA_CALL(cuDeviceGet(&device_, device_id_));
-
-    char device_name[100];
-    CHECK_CUDA_CALL(cuDeviceGetName(device_name, 100, device_));
-    DLOG(INFO) << "Using device: " << device_name;
-
-    try {
+    stream_ = CUStream({device_id, false});
+    if (!ctx_.Initialized()) {
+        CHECK_CUDA_CALL(cuInit(0));
         auto nvml_ret = nvmlInit();
         if (nvml_ret != NVML_SUCCESS) {
             LOG(FATAL) << "nvmlInit returned error " << nvml_ret;
         }
+        CHECK_CUDA_CALL(cuDeviceGet(&device_, device_id_));
+
+        char device_name[100];
+        CHECK_CUDA_CALL(cuDeviceGetName(device_name, 100, device_));
+        DLOG(INFO) << "Using device: " << device_name;
+        
+        ctx_ = CUContext(device_);
+        if (!ctx_.Initialized()) {
+            LOG(FATAL) << "Problem initializing context";
+            return;
+        }
+    } else {
+        CHECK_CUDA_CALL(cuDeviceGet(&device_, device_id_));
+
+        char device_name[100];
+        CHECK_CUDA_CALL(cuDeviceGetName(device_name, 100, device_));
+        DLOG(INFO) << "Using device: " << device_name;
+    }
+
+     try {
         char nvmod_version_string[NVML_SYSTEM_DRIVER_VERSION_BUFFER_SIZE];
-        nvml_ret = nvmlSystemGetDriverVersion(nvmod_version_string,
-                                              sizeof(nvmod_version_string));
+        auto nvml_ret = nvmlSystemGetDriverVersion(nvmod_version_string,
+                                                   sizeof(nvmod_version_string));
         if (nvml_ret != NVML_SUCCESS) {
             LOG(FATAL) << "nvmlSystemGetDriverVersion returned error " << nvml_ret;
         }
@@ -62,12 +72,25 @@ CUThreadedDecoder::CUThreadedDecoder(int device_id, AVCodecParameters *codecpar,
                     << "The error was: " << e.what();
         stream_ = CUStream(device_id_, true);
     }
+}
 
-    ctx_ = CUContext(device_);
-    if (!ctx_.Initialized()) {
-        LOG(FATAL) << "Problem initializing context";
-        return;
+
+CUThreadedDecoder::CUThreadedDecoder(int device_id, AVCodecParameters *codecpar, AVInputFormat *iformat)
+    : parser_{}, decoder_{},
+    pkt_queue_{}, frame_queue_{},
+    run_(false), frame_count_(0), draining_(false),
+    tex_registry_(), nv_time_base_({1, 10000000}), frame_base_({1, 1000000}),
+    dec_ctx_(nullptr), bsf_ctx_(nullptr), width_(-1), height_(-1),
+    error_status_(false), error_message_() {
+
+    // initialize bitstream filters
+    InitBitStreamFilter(codecpar, iformat);
+
+    if (devices.find(device_id) == devices.end()) {
+       devices.emplace(device_id, new CUMappedDevice(device_id));
     }
+
+    device = devices.find(device_id)->second;
 }
 
 void CUThreadedDecoder::InitBitStreamFilter(AVCodecParameters *codecpar, AVInputFormat *iformat) {
@@ -237,7 +260,7 @@ int CUThreadedDecoder::HandlePictureDisplay_(CUVIDPARSERDISPINFO* disp_info) {
     }
 
     uint8_t* dst_ptr = static_cast<uint8_t*>(arr.data_->dl_tensor.data);
-    auto frame = CUMappedFrame(disp_info, decoder_, stream_);
+    auto frame = CUMappedFrame(disp_info, decoder_, device->stream_);
     // int64_t frame_pts = static_cast<int64_t>(frame.disp_info->timestamp);
     auto input_width = decoder_.Width();
     auto input_height = decoder_.Height();
@@ -247,8 +270,8 @@ int CUThreadedDecoder::HandlePictureDisplay_(CUVIDPARSERDISPINFO* disp_info) {
                                             input_height,
                                             ScaleMethod_Linear,
                                             ChromaUpMethod_Linear);
-    ProcessFrame(textures.chroma, textures.luma, dst_ptr, stream_, input_width, input_height, width_, height_);
-    if (!CHECK_CUDA_CALL(cudaStreamSynchronize(stream_))) {
+    ProcessFrame(textures.chroma, textures.luma, dst_ptr, device->stream_, input_width, input_height, width_, height_);
+    if (!CHECK_CUDA_CALL(cudaStreamSynchronize(device->stream_))) {
         LOG(FATAL) << "Error synchronize cuda stream";
         return 0;
     }
@@ -313,7 +336,7 @@ void CUThreadedDecoder::LaunchThread() {
 }
 
 void CUThreadedDecoder::LaunchThreadImpl() {
-    ctx_.Push();
+    device->ctx_.Push();
     // LOG(INFO) << "LaunchThread, thread id: " << std::this_thread::get_id();
     while (run_.load()) {
         bool ret;

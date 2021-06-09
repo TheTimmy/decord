@@ -18,12 +18,12 @@ class CUMappedFrame {
     public:
         CUMappedFrame();
         CUMappedFrame(CUVIDPARSERDISPINFO* disp_info, CUvideodecoder decoder,
-                    CUstream stream);
+                      CUstream stream);
         ~CUMappedFrame();
         CUMappedFrame(const CUMappedFrame&) = delete;
         CUMappedFrame& operator=(const CUMappedFrame&) = delete;
         CUMappedFrame(CUMappedFrame&& other);
-        CUMappedFrame& operator=(CUMappedFrame&&) = delete;
+        CUMappedFrame& operator=(CUMappedFrame&&);
 
         uint8_t* get_ptr() const;
         unsigned int get_pitch() const;

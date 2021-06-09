@@ -19,12 +19,28 @@
 #include <thread>
 #include <mutex>
 
+#include <unordered_map>
+
 #include <decord/runtime/ndarray.h>
 #include <dmlc/concurrency.h>
 #include <dlpack/dlpack.h>
 
 namespace decord {
 namespace cuda {
+
+class CUMappedDevice {
+public:
+    CUMappedDevice(int device_id);
+    CUMappedDevice(CUMappedDevice&&) = delete;
+    CUMappedDevice(const CUMappedDevice&) = delete;
+    CUMappedDevice& operator = (const CUMappedDevice&) = delete;
+    CUMappedDevice& operator = (CUMappedDevice&&) = delete;
+
+    int device_id_;
+    CUStream stream_;
+    CUdevice device_;
+    static CUContext ctx_;
+};
 
 class CUThreadedDecoder final : public ThreadedDecoderInterface {
     constexpr static int kMaxOutputSurfaces = 20;
@@ -72,10 +88,9 @@ class CUThreadedDecoder final : public ThreadedDecoderInterface {
         void CheckErrorStatus();
         void InitBitStreamFilter(AVCodecParameters *codecpar, AVInputFormat *iformat);
 
-        int device_id_;
-        CUStream stream_;
-        CUdevice device_;
-        CUContext ctx_;
+        static std::unordered_map<int, std::shared_ptr<CUMappedDevice>> devices;
+
+        std::shared_ptr<CUMappedDevice> device;
         CUVideoParser parser_;
         CUVideoDecoderImpl decoder_;
         PacketQueuePtr pkt_queue_;

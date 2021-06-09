@@ -32,7 +32,7 @@ CUMappedFrame::CUMappedFrame(CUVIDPARSERDISPINFO* disp_info,
     params_.output_stream = stream;
 
     if (!CHECK_CUDA_CALL(cuvidMapVideoFrame(decoder_, disp_info->picture_index,
-                                   &ptr_, &pitch_, &params_))) {
+                                            &ptr_, &pitch_, &params_))) {
         LOG(FATAL) << "Unable to map video frame";
     }
     valid_ = true;
@@ -51,6 +51,19 @@ CUMappedFrame::~CUMappedFrame() {
             LOG(FATAL) << "Error unmapping video frame";
         }
     }
+}
+
+CUMappedFrame& CUMappedFrame::operator = (CUMappedFrame&& other) {
+    disp_info = other.disp_info;
+    valid_ = other.valid_;
+    decoder_ = other.decoder_;
+    ptr_ = other.ptr_;
+    pitch_ = other.pitch_;
+    params_ = other.params_;
+
+    other.disp_info = nullptr;
+    other.valid_ = false;
+    return *this;
 }
 
 uint8_t* CUMappedFrame::get_ptr() const {
